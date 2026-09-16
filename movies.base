@@ -1,0 +1,27 @@
+views:
+  - type: table
+    name: Tableau
+    filters:
+      and:
+        - file.folder == "movies"
+    order:
+      - file.name
+      - name
+      - thumb
+      - Runtime
+      - Released_Year
+      - No_of_Votes
+      - Meta_score
+      - IMDB_Rating
+      - Genre
+      - Director
+      - Certificate
+      - Actors
+      - file.path
+    sort:
+      - property: Released_Year
+        direction: DESC
+      - property: name
+        direction: DESC
+      - property: file.name
+        direction: ASC

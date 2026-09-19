@@ -123,6 +123,14 @@ function getFrontmatter(file) {
 
 function getPropertyValues(file, property) {
 
+    if (property === "Date de création du fichier") {
+        return [new Date(file.stat.ctime).toISOString()];
+    }
+
+    if (property === "date de modification du fichier") {
+        return [new Date(file.stat.mtime).toISOString()];
+    }
+
     if (!property) {
         return [];
     }
@@ -214,6 +222,9 @@ function getProperties(files = allFiles) {
             properties.add(key);
         }
     }
+
+    properties.add("Date de création du fichier");
+    properties.add("date de modification du fichier");
 
     return Array.from(properties)
         .sort((a, b) =>
@@ -312,6 +323,14 @@ function detectPropertyType(
         return "text";
     }
 
+    const date = values.length > 0 && values.every(value => {
+        const text = String(value).trim();
+        return /^\d{4}-\d{2}-\d{2}(?:[T\s].*)?$/.test(text)
+            && !Number.isNaN(Date.parse(text));
+    });
+
+    if (date) return "date";
+
     const numeric =
         values.every(value => {
 
@@ -392,8 +411,28 @@ function noteMatchesCriterion(
 
 
     /* ========================================================
-       NUMÉRIQUE
+       DATE
        ======================================================== */
+
+    if (criterion.type === "date") {
+        const timestamps = nonEmptyValues
+            .map(value => Date.parse(String(value)))
+            .filter(value => !Number.isNaN(value));
+
+        if (!timestamps.length) return false;
+
+        const min = criterion.min === null || criterion.min === ""
+            ? -Infinity : Date.parse(`${criterion.min}T00:00:00`);
+        const max = criterion.max === null || criterion.max === ""
+            ? Infinity : Date.parse(`${criterion.max}T23:59:59.999`);
+
+        return timestamps.some(timestamp => timestamp >= min && timestamp <= max);
+    }
+
+    /* ========================================================
+       NUMÉRIQUE
+       ========================================================
+       */
 
     if (criterion.type === "number") {
 
@@ -571,31 +610,31 @@ function getFilteredFiles() {
 
 function getAvailableValuesForCriterion(
     criterionIndex,
-    property
+    property,
+    valuesKey = "withValues"
 ) {
 
     if (!property) {
         return [];
     }
 
-    const counts =
-        new Map();
+    const counts = new Map();
 
-    let files =
-        getFilesForFolder(
-            state.selectedFolder
-        );
+    let files = getFilesForFolder(
+        state.selectedFolder
+    );
 
-    files =
-        files.filter(file =>
-            noteMatchesSearch(file)
-        );
+    files = files.filter(file =>
+        noteMatchesSearch(file)
+    );
+
+    const currentCriterion =
+        state.criteria[criterionIndex];
 
     /*
-       On applique tous les autres critères,
-       mais pas celui en cours.
+       Appliquer tous les critères autres que celui
+       dont on construit actuellement la liste.
     */
-
     for (
         let i = 0;
         i < state.criteria.length;
@@ -606,48 +645,66 @@ function getAvailableValuesForCriterion(
             continue;
         }
 
-        const criterion =
-            state.criteria[i];
+        files = files.filter(file =>
+            noteMatchesCriterion(
+                file,
+                state.criteria[i]
+            )
+        );
+    }
 
-        if (
-            criterion.property ===
-            property
-        ) {
-            continue;
-        }
+    /*
+       Si "Toutes les valeurs AVEC doivent être présentes"
+       est activé, on applique les valeurs Avec déjà choisies.
 
-        files =
-            files.filter(file =>
-                noteMatchesCriterion(
+       Cela permet de recalculer les valeurs restantes dans
+       Avec ET dans Sans à partir des notes compatibles.
+    */
+    if (
+        currentCriterion &&
+        currentCriterion.requireAll &&
+        currentCriterion.withValues &&
+        currentCriterion.withValues.length > 0
+    ) {
+
+        const valuesToRequire =
+            currentCriterion.withValues.map(value =>
+                normalize(value)
+            );
+
+        files = files.filter(file => {
+
+            const fileValues = new Set(
+                getPropertyValues(
                     file,
-                    criterion
+                    property
+                ).map(value =>
+                    normalize(displayValue(value))
                 )
             );
+
+            return valuesToRequire.every(value =>
+                fileValues.has(value)
+            );
+        });
     }
 
     for (const file of files) {
 
-        const values =
-            getPropertyValues(
-                file,
-                property
-            );
+        const values = getPropertyValues(
+            file,
+            property
+        );
 
-        /*
-           Une valeur n'est comptée qu'une fois
-           par note.
-        */
-
-        const uniqueValues =
-            new Set(
-                values
-                    .map(value =>
-                        displayValue(value)
-                    )
-                    .filter(value =>
-                        value.trim() !== ""
-                    )
-            );
+        const uniqueValues = new Set(
+            values
+                .map(value =>
+                    displayValue(value)
+                )
+                .filter(value =>
+                    value.trim() !== ""
+                )
+        );
 
         for (const value of uniqueValues) {
 
@@ -658,10 +715,9 @@ function getAvailableValuesForCriterion(
         }
     }
 
-    let result =
-        Array.from(
-            counts.entries()
-        );
+    let result = Array.from(
+        counts.entries()
+    );
 
     if (state.valueSort === "count") {
 
@@ -687,7 +743,6 @@ function getAvailableValuesForCriterion(
 
     return result;
 }
-
 
 /* ============================================================
    IMAGES
@@ -1702,7 +1757,8 @@ function renderAutocomplete(
         const available =
             getAvailableValuesForCriterion(
                 criterionIndex,
-                property
+                property,
+                valuesKey
             );
 
         const selectedValues =
@@ -2145,23 +2201,12 @@ function renderCriteria(container) {
                     !criterion.isNotNull
                 ) {
 
-                    if (
-                        criterion.type ===
-                        "number"
-                    ) {
-
-                        renderNumericCriterion(
-                            body,
-                            criterion
-                        );
-
+                    if (criterion.type === "number") {
+                        renderNumericCriterion(body, criterion, index);
+                    } else if (criterion.type === "date") {
+                        renderDateCriterion(body, criterion);
                     } else {
-
-                        renderTextCriterion(
-                            body,
-                            index,
-                            criterion
-                        );
+                        renderTextCriterion(body, index, criterion);
                     }
                 }
             }
@@ -2349,18 +2394,60 @@ function renderTextCriterion(
 
 
 /* ============================================================
+   CRITÈRE DATE - DOUBLE DATE PICKER
+   ============================================================ */
+
+function renderDateCriterion(container, criterion) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "explorer-date-forms";
+
+    const fromLabel = document.createElement("label");
+    fromLabel.textContent = "Date de début";
+    const from = document.createElement("input");
+    from.type = "date";
+    from.value = criterion.min || "";
+    from.onchange = () => { criterion.min = from.value || null; renderAll(); };
+    fromLabel.appendChild(from);
+
+    const toLabel = document.createElement("label");
+    toLabel.textContent = "Date de fin";
+    const to = document.createElement("input");
+    to.type = "date";
+    to.value = criterion.max || "";
+    to.onchange = () => { criterion.max = to.value || null; renderAll(); };
+    toLabel.appendChild(to);
+
+    wrapper.appendChild(fromLabel);
+    wrapper.appendChild(toLabel);
+    container.appendChild(wrapper);
+}
+
+
+/* ============================================================
    CRITÈRE NUMÉRIQUE AVEC SLIDER
    ============================================================ */
 
 function renderNumericCriterion(
     container,
-    criterion
+    criterion,
+    criterionIndex = null
 ) {
 
-    const files =
+    let files =
         getFilesForFolder(
             state.selectedFolder
         );
+
+    files = files.filter(file =>
+        noteMatchesSearch(file)
+    );
+
+    for (let i = 0; i < state.criteria.length; i++) {
+        if (i === criterionIndex) continue;
+        files = files.filter(file =>
+            noteMatchesCriterion(file, state.criteria[i])
+        );
+    }
 
     const numbers = [];
 
@@ -2805,68 +2892,49 @@ function renderNumericCriterion(
 
 function sortFiles(files) {
 
-    const result =
-        [...files];
+    const result = [...files];
 
-    result.sort(
-        (a, b) => {
+    result.sort((a, b) => {
 
-            let va;
-            let vb;
+        let va;
+        let vb;
 
-            switch (
-                state.sortField
-            ) {
-
-                case "path":
-                    va = a.path;
-                    vb = b.path;
-                    break;
-
-                case "created":
-                    va = a.stat.ctime;
-                    vb = b.stat.ctime;
-                    break;
-
-                case "modified":
-                    va = a.stat.mtime;
-                    vb = b.stat.mtime;
-                    break;
-
-                case "name":
-                default:
-                    va = a.basename;
-                    vb = b.basename;
-                    break;
-            }
-
-            if (
-                typeof va ===
-                "string"
-            ) {
-
-                const comparison =
-                    va.localeCompare(
-                        vb,
-                        "fr"
-                    );
-
-                return state.sortDirection ===
-                    "asc"
-                    ? comparison
-                    : -comparison;
-            }
-
-            return state.sortDirection ===
-                "asc"
-                ? va - vb
-                : vb - va;
+        switch (state.sortField) {
+            case "path":
+                va = a.path; vb = b.path; break;
+            case "created":
+                va = a.stat.ctime; vb = b.stat.ctime; break;
+            case "modified":
+                va = a.stat.mtime; vb = b.stat.mtime; break;
+            case "name":
+                va = a.basename; vb = b.basename; break;
+            default:
+                va = getFrontmatter(a)[state.sortField];
+                vb = getFrontmatter(b)[state.sortField];
+                break;
         }
-    );
+
+        const aEmpty = va === null || va === undefined || displayValue(va).trim() === "";
+        const bEmpty = vb === null || vb === undefined || displayValue(vb).trim() === "";
+        if (aEmpty && bEmpty) return 0;
+        if (aEmpty) return 1;
+        if (bEmpty) return -1;
+
+        const aText = displayValue(va);
+        const bText = displayValue(vb);
+        const aNumber = Number(aText);
+        const bNumber = Number(bText);
+        const bothNumeric = !Number.isNaN(aNumber) && !Number.isNaN(bNumber);
+
+        const comparison = bothNumeric
+            ? aNumber - bNumber
+            : aText.localeCompare(bText, "fr", { numeric: true, sensitivity: "base" });
+
+        return state.sortDirection === "asc" ? comparison : -comparison;
+    });
 
     return result;
 }
-
 
 /* ============================================================
    RENDU DES RÉSULTATS UNIQUEMENT
@@ -4141,6 +4209,14 @@ async function renderAll() {
         ["created", "Date de création"],
         ["modified", "Date de modification"]
     ];
+
+    const sortProperties = getProperties(
+        getFilesForFolder(state.selectedFolder)
+    );
+
+    for (const property of sortProperties) {
+        sortOptions.push([property, property]);
+    }
 
     for (
         const [value, label]

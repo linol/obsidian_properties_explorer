@@ -1213,7 +1213,7 @@ function renderStatisticNotes(
                 event.preventDefault();
 
                 await app.workspace
-                    .getLeaf(false)
+                    .getLeaf("tab")
                     .openFile(file);
             };
 
@@ -2397,9 +2397,35 @@ function renderTextCriterion(
    CRITÈRE DATE - DOUBLE DATE PICKER
    ============================================================ */
 
+function getDateBoundsForCriterion(criterion) {
+    let files = getFilesForFolder(state.selectedFolder)
+        .filter(file => noteMatchesSearch(file));
+
+    const criterionIndex = state.criteria.indexOf(criterion);
+    files = files.filter(file =>
+        fileMatchesAllCriteria(file, criterionIndex)
+    );
+
+    const timestamps = files
+        .flatMap(file => getPropertyValues(file, criterion.property))
+        .map(value => Date.parse(String(value)))
+        .filter(value => !Number.isNaN(value));
+
+    if (!timestamps.length) return { min: null, max: null };
+
+    return {
+        min: new Date(Math.min(...timestamps)).toISOString().slice(0, 10),
+        max: new Date(Math.max(...timestamps)).toISOString().slice(0, 10)
+    };
+}
+
 function renderDateCriterion(container, criterion) {
     const wrapper = document.createElement("div");
     wrapper.className = "explorer-date-forms";
+
+    const bounds = getDateBoundsForCriterion(criterion);
+    if (!criterion.min && bounds.min) criterion.min = bounds.min;
+    if (!criterion.max && bounds.max) criterion.max = bounds.max;
 
     const fromLabel = document.createElement("label");
     fromLabel.textContent = "Date de début";
@@ -3113,7 +3139,7 @@ async function renderResults(
             async () => {
 
                 await app.workspace
-                    .getLeaf(false)
+                    .getLeaf("tab")
                     .openFile(file);
             };
 
